@@ -6,19 +6,19 @@ Rust crate for the PopLine serialization format.
 
 ```toml
 [dependencies]
-popline-rust = "0.1.0"
+pln = "0.1.0"
 ```
 
 ## Usage
 
 ```rust
-use popline_rust::{parse, serialize, PlnValue};
+use pln::{from_str, to_string, PlnValue};
 
 // Parse
-let v = parse("{\nkey: \"value\"\n").unwrap();
+let v = from_str("{\nkey: \"value\"\n").unwrap();
 
 // Serialize
-let s = serialize(&v);
+let s = to_string(&v);
 
 // Build DOM
 let mut obj = PlnValue::new_object();
@@ -29,7 +29,7 @@ obj.add_to_object("name", PlnValue::new_string("test"));
 
 Data: `package.json` (17011 B) / `package.pln` (13074 B, 76.9%)
 
-| Operation | serde_json | popline-rust | Ratio |
+| Operation | serde_json | pln | Ratio |
 |-----------|-----------|-------------|-------|
 | Parse | — | — | TBD |
 | Serialize | — | — | TBD |
