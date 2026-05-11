@@ -1,6 +1,6 @@
 use crate::PlnValue;
 
-pub fn serialize(value: &PlnValue) -> String {
+pub fn to_string(value: &PlnValue) -> String {
     let mut g = Generator::new();
     g.write_value(value);
     g.buf

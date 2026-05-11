@@ -5,6 +5,9 @@ edition = "2021"
 description = "PopLine serialization format for Rust"
 license = "MIT"
 
+[lib]
+name = "pln"
+
 [dependencies]
 serde_json = "1.0"
 

@@ -1,4 +1,4 @@
-use popline_rust::{parse, serialize, PlnValue};
+use pln::{from_str, to_string, PlnValue};
 use std::fs;
 use std::time::Instant;
 
@@ -23,41 +23,41 @@ fn json_value(v: &PlnValue) -> serde_json::Value {
 
 #[test]
 fn test_basic_types() {
-    let v = parse("{\nname: \"popline\"\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\nname: \"popline\"\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    let v = parse("{\na: 42\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\na: 42\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 }
 
 #[test]
 fn test_nesting() {
-    let v = parse("{\nouter: {\ninner: \"value\"\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\nouter: {\ninner: \"value\"\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 }
 
 #[test]
 fn test_pop() {
-    let v = parse("{\nouter: {\ninner: \"x\"\n1 mid: \"y\"\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\nouter: {\ninner: \"x\"\n1 mid: \"y\"\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    let v = parse("{\na: {\nb: {\nc: \"deep\"\n2 x: \"top\"\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\na: {\nb: {\nc: \"deep\"\n2 x: \"top\"\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 }
 
 #[test]
 fn test_strings() {
-    let v = parse("{\nmsg: \"He said: \"\"Hello\"\"\"\n").unwrap();
-    assert_eq!(v, parse(&serialize(&v)).unwrap());
+    let v = from_str("{\nmsg: \"He said: \"\"Hello\"\"\"\n").unwrap();
+    assert_eq!(v, from_str(&to_string(&v)).unwrap());
 }
 
 #[test]
 fn test_errors() {
-    assert!(parse("42\n").is_err());
-    assert!(parse("\"str\"\n").is_err());
-    assert!(parse("true\n").is_err());
-    assert!(parse("{\nbad:key: 1\n").is_err());
-    assert!(parse("{\n\"key\": 1\n").is_err());
+    assert!(from_str("42\n").is_err());
+    assert!(from_str("\"str\"\n").is_err());
+    assert!(from_str("true\n").is_err());
+    assert!(from_str("{\nbad:key: 1\n").is_err());
+    assert!(from_str("{\n\"key\": 1\n").is_err());
 }
 
 // ═══════════════ Real Data Consistency ═══════════════
@@ -74,13 +74,13 @@ fn test_real_data_consistency() {
     };
 
     let json_obj: serde_json::Value = serde_json::from_str(&json_text).unwrap();
-    let pln_val = parse(&pln_text).unwrap();
+    let pln_val = from_str(&pln_text).unwrap();
     let pln_as_json = json_value(&pln_val);
 
     assert_eq!(pln_as_json, json_obj, "PopLine vs JSON mismatch");
 
-    let s = serialize(&pln_val);
-    let v2 = parse(&s).unwrap();
+    let s = to_string(&pln_val);
+    let v2 = from_str(&s).unwrap();
     assert_eq!(pln_val, v2, "PopLine roundtrip mismatch");
 
     println!("  data: JSON={}B, PopLine={}B ({:.1}%)",
@@ -102,7 +102,7 @@ fn test_benchmark() {
     };
 
     let json_obj: serde_json::Value = serde_json::from_str(&json_text).unwrap();
-    let pln_val = parse(&pln_text).unwrap();
+    let pln_val = from_str(&pln_text).unwrap();
     let N = 5000;
 
     println!("\n── Performance Benchmark ({} iterations) ──", N);
@@ -121,7 +121,7 @@ fn test_benchmark() {
         serde_json::to_string(&json_obj).unwrap();
     });
     let pl_ser = bench("popline::serialize", || {
-        serialize(&pln_val);
+        to_string(&pln_val);
     });
     println!("  {:26s} {:7.2}x", "PopLine/JSON", pl_ser / js_ser);
 
@@ -129,7 +129,7 @@ fn test_benchmark() {
         let _: serde_json::Value = serde_json::from_str(&json_text).unwrap();
     });
     let pl_par = bench("popline::parse", || {
-        parse(&pln_text).unwrap();
+        from_str(&pln_text).unwrap();
     });
     println!("  {:26s} {:7.2}x", "PopLine/JSON", pl_par / js_par);
 }

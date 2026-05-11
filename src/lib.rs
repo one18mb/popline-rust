@@ -1,8 +1,8 @@
 mod parser;
 mod serializer;
 
-pub use parser::parse;
-pub use serializer::serialize;
+pub use parser::from_str;
+pub use serializer::to_string;
 
 /// PopLine DOM value type.
 #[derive(Debug, Clone, PartialEq)]
