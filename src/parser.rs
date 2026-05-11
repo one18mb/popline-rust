@@ -309,7 +309,7 @@ fn parse_pop_prefix(line: &str) -> (usize, usize) {
         i += 1;
     }
     if i > 0 && i < bytes.len() && bytes[i] == b' ' {
-        let n: usize = line[..i].from_str().unwrap_or(0);
+        let n: usize = line[..i].parse().unwrap_or(0);
         (n, i + 1)
     } else {
         (0, 0)

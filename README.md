@@ -27,12 +27,12 @@ obj.add_to_object("name", PlnValue::new_string("test"));
 
 ## 性能
 
-测试数据：`package.json`（17011 字节） / `package.pln`（13074 字节，76.9%）
+测试数据：`package.json`（17011 B）→ `package.pln`（13074 B，**76.9%**），5000 次迭代
 
-| 操作 | serde_json | popline-rust | 比 |
+| 操作 | serde_json | pln | 比 |
 |------|-----------|-------------|------|
-| 解析 | — | — | 待基准测试 |
-| 序列化 | — | — | 待基准测试 |
+| 解析 | 4788 ms (958 µs/op) | 9042 ms (1808 µs/op) | 1.89x |
+| 序列化 | 6783 ms (1357 µs/op) | 2323 ms (465 µs/op) | **0.34x** |
 
 ## 测试
 

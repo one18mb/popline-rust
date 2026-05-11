@@ -107,29 +107,29 @@ fn test_benchmark() {
 
     println!("\n── Performance Benchmark ({} iterations) ──", N);
 
-    let mut bench = |label: &str, mut f: impl FnMut()| {
+    fn bench<F: FnMut()>(label: &str, mut f: F, n: usize) -> f64 {
         f();
         let start = Instant::now();
-        for _ in 0..N { f(); }
+        for _ in 0..n { f(); }
         let ms = start.elapsed().as_secs_f64() * 1000.0;
-        let us = ms * 1000.0 / N as f64;
-        println!("  {:26s} {:8.1} ms  {:8.1} us/op", label, ms, us);
+        let us = ms * 1000.0 / n as f64;
+        println!("  {:26} {:8.1} ms  {:8.1} us/op", label, ms, us);
         ms
-    };
+    }
 
     let js_ser = bench("serde_json::to_string", || {
         serde_json::to_string(&json_obj).unwrap();
-    });
-    let pl_ser = bench("popline::serialize", || {
+    }, N);
+    let pl_ser = bench("to_string", || {
         to_string(&pln_val);
-    });
-    println!("  {:26s} {:7.2}x", "PopLine/JSON", pl_ser / js_ser);
+    }, N);
+    println!("  {:26} {:7.2}x", "PopLine/JSON", pl_ser / js_ser);
 
     let js_par = bench("serde_json::from_str", || {
         let _: serde_json::Value = serde_json::from_str(&json_text).unwrap();
-    });
-    let pl_par = bench("popline::parse", || {
+    }, N);
+    let pl_par = bench("from_str", || {
         from_str(&pln_text).unwrap();
-    });
-    println!("  {:26s} {:7.2}x", "PopLine/JSON", pl_par / js_par);
+    }, N);
+    println!("  {:26} {:7.2}x", "PopLine/JSON", pl_par / js_par);
 }
