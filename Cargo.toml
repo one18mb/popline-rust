@@ -1,0 +1,8 @@
+[package]
+name = "popline-rust"
+version = "0.1.0"
+edition = "2021"
+description = "PopLine serialization format for Rust"
+license = "MIT"
+
+[dependencies]
