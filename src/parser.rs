@@ -462,7 +462,7 @@ fn is_key_valid(key: &str) -> bool {
     }
     for c in key.chars() {
         match c {
-            ':' | '"' | '{' | '}' | '[' | ']' | '#' | ' ' | '\t' | '\n' | '\r' => {
+            ':' | '"' | '{' | '[' | '#' | ' ' | '\t' | '\n' | '\r' => {
                 return false;
             }
             _ => {}
