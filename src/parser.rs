@@ -116,6 +116,14 @@ impl Parser {
 
             // If no frames yet, this line must open the root container
             if self.frames.is_empty() {
+                // Check top-level inline containers: `[ [` or `[ {`
+                if content.len() > 1 && content.as_bytes()[0] == b'[' {
+                    let trimmed = content[1..].trim_start();
+                    if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
+                        self.parse_inline_containers(content)?;
+                        continue;
+                    }
+                }
                 match content {
                     "{" => {
                         self.frames.push(PlnNode::new_object());
@@ -135,6 +143,18 @@ impl Parser {
                 let top = self.frames.last().unwrap();
                 matches!(*top.borrow(), PlnNode::Object(_))
             };
+
+            // Check for inline containers in array context: `[ [`、`[ {`、`{ [`、`{ {`
+            if !is_object && content.len() > 1 {
+                let bytes = content.as_bytes();
+                if bytes[0] == b'[' || bytes[0] == b'{' {
+                    let trimmed = content[1..].trim_start();
+                    if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
+                        self.parse_inline_containers(content)?;
+                        continue;
+                    }
+                }
+            }
 
             match content {
                 "{" => {
@@ -203,6 +223,27 @@ impl Parser {
         Ok(())
     }
 
+    /// Parse consecutive container openers on a single line: `[ [`, `[ {`, etc.
+    fn parse_inline_containers(&mut self, s: &str) -> Result<(), String> {
+        let trimmed = s.trim();
+        let mut part = trimmed;
+        while !part.is_empty() {
+            let ch = part.as_bytes()[0] as char;
+            if ch != '{' && ch != '[' {
+                return Err("inline containers must be '{' or '['".to_string());
+            }
+            let n = if ch == '{' { PlnNode::new_object() } else { PlnNode::new_array() };
+            if self.frames.is_empty() {
+                self.frames.push(n);
+            } else {
+                self.add_to_top(n.clone());
+                self.frames.push(n);
+            }
+            part = part[1..].trim_start();
+        }
+        Ok(())
+    }
+
     /// Parse a line in object context: `key: value`.
     fn parse_object_line(&mut self, rest: &str) -> Result<(), String> {
         // Find ": " separator
@@ -219,6 +260,17 @@ impl Parser {
         }
 
         self.key = key.to_string();
+
+        // Check value inline containers: `key: [ [` or `key: [ {`
+        if val_part.len() > 1 {
+            let bytes = val_part.as_bytes();
+            if bytes[0] == b'[' || bytes[0] == b'{' {
+                let trimmed = val_part[1..].trim_start();
+                if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
+                    return self.parse_inline_containers(val_part);
+                }
+            }
+        }
 
         // Check for inline container openers
         match val_part {
