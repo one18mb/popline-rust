@@ -140,7 +140,7 @@ impl Parser {
                 matches!(*top.borrow(), PlnNode::Object(_))
             };
 
-            // Check for inline containers in array context: `[ [`、`[ {`、`{ [`、`{ {`
+            // Check for inline containers in array context: `[ [` / `[ {` / `{ [` / `{ {`
             if !is_object && content.len() > 1 {
                 let bytes = content.as_bytes();
                 if bytes[0] == b'[' || bytes[0] == b'{' {
@@ -259,7 +259,7 @@ impl Parser {
         if !is_key_valid(key) {
             return Err(format!("invalid key: '{}'", key));
         }
-        let mut val_part = &rest[sep + 2..];
+        let val_part = &rest[sep + 2..];
         if val_part.is_empty() {
             return Err("empty value in object".to_string());
         }
@@ -294,15 +294,15 @@ impl Parser {
             _ => {}
         }
 
-        // Leaf value: try pop suffix (only for non-container values)
-        let n_pop = if val_part.as_bytes()[0] != b'{' && val_part.as_bytes()[0] != b'[' {
+        // Leaf value: try pop suffix (only for non-container values, matching C)
+        let (val, n_pop) = if val_part.as_bytes()[0] != b'{' && val_part.as_bytes()[0] != b'[' {
             trim_pop_suffix(val_part)
         } else {
-            0
+            (val_part, 0)
         };
 
         // Scalar / string value
-        match parse_scalar(val_part, self)? {
+        match parse_scalar(val, self)? {
             Some(node) => {
                 self.add_to_top(node);
                 if n_pop > 0 {
@@ -318,10 +318,9 @@ impl Parser {
 
     /// Parse a line in array context: the line IS the value (after pop stripping).
     fn parse_array_line(&mut self, rest: &str) -> Result<(), String> {
-        // Leaf value: try pop suffix (only for non-container values)
+        // Leaf value: try pop suffix (only for non-container values, matching C)
         let (trimmed_rest, n_pop) = if rest.as_bytes()[0] != b'{' && rest.as_bytes()[0] != b'[' {
-            let (trimmed, n) = trim_pop_suffix_and_len(rest);
-            (trimmed, n)
+            trim_pop_suffix(rest)
         } else {
             (rest, 0)
         };
@@ -352,14 +351,14 @@ impl Parser {
                     self.strbuf.push('"');
                     chars.next(); // consume second '"'
                 } else {
-                    // Closing quote — check for trailing content (pop suffix)
+                    // Closing quote -- check trailing for pop suffix " N"
                     let trailing: String = chars.collect();
                     if trailing.is_empty() {
                         return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
                             self.strbuf.clone(),
                         ))), 0)));
                     }
-                    // Check for valid pop suffix " N"
+                    // Check for valid pop suffix like " N"
                     let n_pop = pop_suffix_after(&trailing)?;
                     return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
                         self.strbuf.clone(),
@@ -369,7 +368,7 @@ impl Parser {
                 self.strbuf.push(c);
             }
         }
-        // End of line without closing — continue string
+        // End of line without closing -- continue string
         self.strbuf.push('\n');
         Ok(None)
     }
@@ -380,51 +379,47 @@ impl Parser {
 // ---------------------------------------------------------------------------
 
 /// Returns (pop_count, content_start_index).
-/// If no pop prefix, returns (0, 0).
+/// Only activates for containers (`{`, `[`) and key:value lines (containing `:`)
+/// — mirroring the C reference parser. Leaf values with leading digits
+/// (e.g. `2 1` meaning value 2 with suffix pop 1) must NOT be treated as
+/// prefix pops.
 fn parse_pop_prefix(line: &str) -> (usize, usize) {
     let bytes = line.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
+    while i < len && bytes[i].is_ascii_digit() {
         i += 1;
     }
-    if i > 0 && i < bytes.len() && bytes[i] == b' ' {
-        let n: usize = line[..i].parse().unwrap_or(0);
-        (n, i + 1)
-    } else {
-        (0, 0)
+    if i == 0 || i >= len || bytes[i] != b' ' {
+        return (0, 0);
     }
+    let ndigits = i;
+
+    // Skip spaces after digits to find first content char (matching C)
+    let after = i + 1;
+    // Only apply prefix pop when content starts with '{', '[' or contains ':'
+    if after < len {
+        let nc = bytes[after];
+        if nc != b'{' && nc != b'[' && !line[after..].contains(':') {
+            return (0, 0);
+        }
+    } else {
+        // bare "N " with no content — not a valid prefix pop
+        return (0, 0);
+    }
+
+    let n: usize = line[..ndigits].parse().unwrap_or(0);
+    (n, ndigits + 1)
 }
 
 // ---------------------------------------------------------------------------
 // Pop-suffix detection (trailing " N" on leaf value lines)
 // ---------------------------------------------------------------------------
 
-/// Strip trailing " N" (space + digits) from a leaf value string.
-/// Returns the pop count. The trimmed string is modified via slice.
-fn trim_pop_suffix(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-    if len < 2 { return 0; }
-
-    // Check if last char is a digit
-    let mut i = len - 1;
-    if !bytes[i].is_ascii_digit() { return 0; }
-
-    // Scan backward while digits
-    while i > 0 && bytes[i - 1].is_ascii_digit() {
-        i -= 1;
-    }
-
-    // Check preceded by space
-    if i == 0 || bytes[i - 1] != b' ' { return 0; }
-
-    // Parse pop count
-    s[i..len].parse().unwrap_or(0)
-}
-
-/// Strip trailing " N" from a leaf value string.
-/// Returns (trimmed_slice, pop_count). The slice is the content before " N".
-fn trim_pop_suffix_and_len<'a>(s: &'a str) -> (&'a str, usize) {
+/// Strip trailing " N" (space + digits) from the end of a leaf value string.
+/// Returns (content_without_suffix, pop_count).
+/// If no suffix is present, returns (s, 0) (no copy).
+fn trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
     let bytes = s.as_bytes();
     let len = bytes.len();
     if len < 2 { return (s, 0); }
@@ -439,33 +434,7 @@ fn trim_pop_suffix_and_len<'a>(s: &'a str) -> (&'a str, usize) {
     if i == 0 || bytes[i - 1] != b' ' { return (s, 0); }
 
     let n: usize = s[i..len].parse().unwrap_or(0);
-
-    // Also trim trailing whitespace after stripping "N" suffix
-    // to avoid the trailing space in "value N \n" from serializer
-    let content_end = i - 1;
-    // Check if there's trailing whitespace before the " N" suffix
-    // (e.g. serializer outputs "value 1 \n", we need "value")
-    let mut actual_end = content_end;
-    while actual_end > 0 && bytes[actual_end - 1] == b' ' {
-        actual_end -= 1;
-    }
-    // But don't strip spaces that are part of quoted content
-    // Only strip if the suffix pattern was clearly " N" at the end
-    if actual_end < content_end {
-        // Additional space after "N" means "value 1 " pattern from serializer
-        // The actual content is "value" and pop is 1
-        let content_str = &s[..actual_end];
-        // But we must verify we didn't strip quotes
-        if actual_end > 1 && bytes[actual_end - 1] == b'"' {
-            // Quoted content: don't strip trailing spaces inside quotes
-            // e.g. "hello " 1 -> content is "hello ", pop is 1
-            (&s[..content_end], n)
-        } else {
-            (content_str, n)
-        }
-    } else {
-        (&s[..content_end], n)
-    }
+    (&s[..i - 1], n)
 }
 
 /// Validate that a suffix after a closing quote is a valid " N" pop marker.
@@ -507,9 +476,9 @@ fn pop_suffix_after(s: &str) -> Result<usize, String> {
 
 /// Parse a scalar/string value from `s`.
 /// Returns:
-///   Ok(Some(node))  — value fully parsed
-///   Ok(None)        — multi-line string started, not yet closed
-///   Err(msg)        — parse error
+///   Ok(Some(node))  -- value fully parsed
+///   Ok(None)        -- multi-line string started, not yet closed
+///   Err(msg)        -- parse error
 fn parse_scalar(
     s: &str,
     p: &mut Parser,
@@ -577,7 +546,7 @@ fn parse_quoted(
         }
     }
 
-    // End of content without closing — multi-line string
+    // End of content without closing -- multi-line string
     p.in_string = true;
     p.strbuf.clear();
     p.strbuf.push_str(content);
