@@ -38,14 +38,14 @@ fn test_nesting() {
 
 #[test]
 fn test_pop() {
-    // Prefix-style pops (still supported for containers and key:value lines)
-    let v = from_str("{\nouter: {\ninner: \"x\"\n1 mid: \"y\"\n").unwrap();
+    // Suffix-style pops
+    let v = from_str("{\nouter: {\ninner: \"x\" 1\nmid: \"y\"\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    let v = from_str("{\na: {\nb: {\nc: \"deep\"\n2 x: \"top\"\n").unwrap();
+    let v = from_str("{\na: {\nb: {\nc: \"deep\" 2\nx: \"top\"\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    // Suffix-style pops (new format for leaf values)
+    // Batch pops
     let v = from_str("{\nouter: {\ninner: \"x\"\nmid: \"other\" 1\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 

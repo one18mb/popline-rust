@@ -96,31 +96,17 @@ impl Parser {
                 continue;
             }
 
-            // Detect pop prefix: digits at line start followed by space
-            let (n_pop, content_start) = parse_pop_prefix(line);
-            let content  = &line[content_start..];
-
-            // Validate bare pop line
-            if n_pop > 0 && content.is_empty() {
-                return Err("bare pop line: no content after pop prefix".to_string());
-            }
-
-            // Close N containers (pop from innermost out)
-            if n_pop > 0 {
-                self.pop_layers(n_pop)?;
-            }
-
             // If no frames yet, this line must open the root container
             if self.frames.is_empty() {
                 // Check top-level inline containers: `[ [` or `[ {`
-                if content.len() > 1 && content.as_bytes()[0] == b'[' {
-                    let trimmed = content[1..].trim_start();
+                if line.len() > 1 && line.as_bytes()[0] == b'[' {
+                    let trimmed = line[1..].trim_start();
                     if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                        self.parse_inline_containers(content)?;
+                        self.parse_inline_containers(line)?;
                         continue;
                     }
                 }
-                match content {
+                match line {
                     "{" => {
                         self.frames.push(PlnNode::new_object());
                         Ok(())
@@ -141,18 +127,18 @@ impl Parser {
             };
 
             // Check for inline containers in array context: `[ [` / `[ {` / `{ [` / `{ {`
-            if !is_object && content.len() > 1 {
-                let bytes = content.as_bytes();
+            if !is_object && line.len() > 1 {
+                let bytes = line.as_bytes();
                 if bytes[0] == b'[' || bytes[0] == b'{' {
-                    let trimmed = content[1..].trim_start();
+                    let trimmed = line[1..].trim_start();
                     if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                        self.parse_inline_containers(content)?;
+                        self.parse_inline_containers(line)?;
                         continue;
                     }
                 }
             }
 
-            match content {
+            match line {
                 "{" => {
                     let n = PlnNode::new_object();
                     self.add_to_top(n.clone());
@@ -165,9 +151,9 @@ impl Parser {
                 }
                 _ => {
                     if is_object {
-                        self.parse_object_line(content)?;
+                        self.parse_object_line(line)?;
                     } else {
-                        self.parse_array_line(content)?;
+                        self.parse_array_line(line)?;
                     }
                 }
             }
@@ -296,7 +282,7 @@ impl Parser {
 
         // Leaf value: try pop suffix (only for non-container values, matching C)
         let (val, n_pop) = if val_part.as_bytes()[0] != b'{' && val_part.as_bytes()[0] != b'[' {
-            trim_pop_suffix(val_part)
+            fwd_trim_pop_suffix(val_part)
         } else {
             (val_part, 0)
         };
@@ -320,7 +306,7 @@ impl Parser {
     fn parse_array_line(&mut self, rest: &str) -> Result<(), String> {
         // Leaf value: try pop suffix (only for non-container values, matching C)
         let (trimmed_rest, n_pop) = if rest.as_bytes()[0] != b'{' && rest.as_bytes()[0] != b'[' {
-            trim_pop_suffix(rest)
+            fwd_trim_pop_suffix(rest)
         } else {
             (rest, 0)
         };
@@ -378,63 +364,30 @@ impl Parser {
 // Pop-prefix detection (digits + space at line start)
 // ---------------------------------------------------------------------------
 
-/// Returns (pop_count, content_start_index).
-/// Only activates for containers (`{`, `[`) and key:value lines (containing `:`)
-/// — mirroring the C reference parser. Leaf values with leading digits
-/// (e.g. `2 1` meaning value 2 with suffix pop 1) must NOT be treated as
-/// prefix pops.
-fn parse_pop_prefix(line: &str) -> (usize, usize) {
-    let bytes = line.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == 0 || i >= len || bytes[i] != b' ' {
-        return (0, 0);
-    }
-    let ndigits = i;
-
-    // Skip spaces after digits to find first content char (matching C)
-    let after = i + 1;
-    // Only apply prefix pop when content starts with '{', '[' or contains ':'
-    if after < len {
-        let nc = bytes[after];
-        if nc != b'{' && nc != b'[' && !line[after..].contains(':') {
-            return (0, 0);
-        }
-    } else {
-        // bare "N " with no content — not a valid prefix pop
-        return (0, 0);
-    }
-
-    let n: usize = line[..ndigits].parse().unwrap_or(0);
-    (n, ndigits + 1)
-}
-
 // ---------------------------------------------------------------------------
 // Pop-suffix detection (trailing " N" on leaf value lines)
 // ---------------------------------------------------------------------------
 
-/// Strip trailing " N" (space + digits) from the end of a leaf value string.
-/// Returns (content_without_suffix, pop_count).
-/// If no suffix is present, returns (s, 0) (no copy).
-fn trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
+/// Forward-scan for " N" pop suffix: when a space is found,
+/// checks if remaining chars are all digits. Returns (value, pop_count).
+fn fwd_trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
     let bytes = s.as_bytes();
     let len = bytes.len();
-    if len < 2 { return (s, 0); }
-
-    let mut i = len - 1;
-    if !bytes[i].is_ascii_digit() { return (s, 0); }
-
-    while i > 0 && bytes[i - 1].is_ascii_digit() {
-        i -= 1;
+    let mut in_string = false;
+    for i in 0..len {
+        if bytes[i] == b'"' { in_string = !in_string; }
+        if !in_string && bytes[i] == b' ' {
+            let mut all_digits = true;
+            for j in i + 1..len {
+                if !bytes[j].is_ascii_digit() { all_digits = false; break; }
+            }
+            if all_digits && i + 1 < len {
+                let n: usize = s[i + 1..len].parse().unwrap_or(0);
+                return (&s[..i], n);
+            }
+        }
     }
-
-    if i == 0 || bytes[i - 1] != b' ' { return (s, 0); }
-
-    let n: usize = s[i..len].parse().unwrap_or(0);
-    (&s[..i - 1], n)
+    (s, 0)
 }
 
 /// Validate that a suffix after a closing quote is a valid " N" pop marker.
@@ -446,13 +399,13 @@ fn pop_suffix_after(s: &str) -> Result<usize, String> {
     let bytes = s.as_bytes();
     if bytes[0] != b' ' {
         return Err(format!(
-            "extra content after closing quote: '{}'",
+            "extra line after closing quote: '{}'",
             s
         ));
     }
     if bytes.len() < 2 || !bytes[1].is_ascii_digit() {
         return Err(format!(
-            "extra content after closing quote: '{}'",
+            "extra line after closing quote: '{}'",
             s
         ));
     }
@@ -461,7 +414,7 @@ fn pop_suffix_after(s: &str) -> Result<usize, String> {
     for &b in &bytes[1..] {
         if !b.is_ascii_digit() {
             return Err(format!(
-                "extra content after closing quote: '{}'",
+                "extra line after closing quote: '{}'",
                 s
             ));
         }
@@ -515,14 +468,14 @@ fn parse_scalar(
     Err(format!("bare string must be quoted: '{}'", s))
 }
 
-/// Parse a quoted string value (content is everything after the opening '"').
+/// Parse a quoted string value (line is everything after the opening '"').
 /// Same return convention as parse_scalar.
 fn parse_quoted(
-    content: &str,
+    line: &str,
     p: &mut Parser,
 ) -> Result<Option<Rc<RefCell<PlnNode>>>, String> {
     let mut result = String::new();
-    let mut chars = content.chars().peekable();
+    let mut chars = line.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c == '"' {
@@ -535,7 +488,7 @@ fn parse_quoted(
                 let trailing: String = chars.collect();
                 if !trailing.trim().is_empty() {
                     return Err(format!(
-                        "extra content after closing quote: '{}'",
+                        "extra line after closing quote: '{}'",
                         trailing
                     ));
                 }
@@ -546,10 +499,10 @@ fn parse_quoted(
         }
     }
 
-    // End of content without closing -- multi-line string
+    // End of line without closing -- multi-line string
     p.in_string = true;
     p.strbuf.clear();
-    p.strbuf.push_str(content);
+    p.strbuf.push_str(line);
     p.strbuf.push('\n');
     Ok(None)
 }
