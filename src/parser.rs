@@ -76,10 +76,13 @@ impl Parser {
             // Multi-line string continuation
             if self.in_string {
                 match self.handle_string_line(line) {
-                    Ok(Some(node)) => {
+                    Ok(Some((node, n_pop))) => {
                         self.in_string = false;
                         self.strbuf.clear();
                         self.add_to_top(node);
+                        if n_pop > 0 {
+                            self.pop_layers(n_pop)?;
+                        }
                     }
                     Ok(None) => {
                         // string continues
@@ -103,15 +106,8 @@ impl Parser {
             }
 
             // Close N containers (pop from innermost out)
-            if n_pop > self.frames.len() {
-                return Err(format!(
-                    "pop {} exceeds container depth {}",
-                    n_pop,
-                    self.frames.len()
-                ));
-            }
-            for _ in 0..n_pop {
-                self.pop_one()?;
+            if n_pop > 0 {
+                self.pop_layers(n_pop)?;
             }
 
             // If no frames yet, this line must open the root container
@@ -215,11 +211,20 @@ impl Parser {
     }
 
     /// Pop the top container from the tracking stack.
-    ///
-    /// The child was already inserted into the parent tree via `add_to_top`
-    /// when it was created, so we only need to drop the frame-level Rc.
     fn pop_one(&mut self) -> Result<(), String> {
+        if self.frames.len() <= 1 {
+            return Err("cannot pop root container".to_string());
+        }
         self.frames.pop().ok_or("pop from empty stack")?;
+        Ok(())
+    }
+
+    /// Pop `n` container layers from the stack, protecting the root.
+    fn pop_layers(&mut self, n: usize) -> Result<(), String> {
+        let n = n.min(self.frames.len().saturating_sub(1)); // protect root
+        for _ in 0..n {
+            self.frames.pop().ok_or("pop from empty stack")?;
+        }
         Ok(())
     }
 
@@ -254,7 +259,7 @@ impl Parser {
         if !is_key_valid(key) {
             return Err(format!("invalid key: '{}'", key));
         }
-        let val_part = &rest[sep + 2..];
+        let mut val_part = &rest[sep + 2..];
         if val_part.is_empty() {
             return Err("empty value in object".to_string());
         }
@@ -289,10 +294,20 @@ impl Parser {
             _ => {}
         }
 
+        // Leaf value: try pop suffix (only for non-container values)
+        let n_pop = if val_part.as_bytes()[0] != b'{' && val_part.as_bytes()[0] != b'[' {
+            trim_pop_suffix(val_part)
+        } else {
+            0
+        };
+
         // Scalar / string value
         match parse_scalar(val_part, self)? {
             Some(node) => {
                 self.add_to_top(node);
+                if n_pop > 0 {
+                    self.pop_layers(n_pop)?;
+                }
             }
             None => {
                 // multi-line string started; key is already in self.key
@@ -303,9 +318,20 @@ impl Parser {
 
     /// Parse a line in array context: the line IS the value (after pop stripping).
     fn parse_array_line(&mut self, rest: &str) -> Result<(), String> {
-        match parse_scalar(rest, self)? {
+        // Leaf value: try pop suffix (only for non-container values)
+        let (trimmed_rest, n_pop) = if rest.as_bytes()[0] != b'{' && rest.as_bytes()[0] != b'[' {
+            let (trimmed, n) = trim_pop_suffix_and_len(rest);
+            (trimmed, n)
+        } else {
+            (rest, 0)
+        };
+
+        match parse_scalar(trimmed_rest, self)? {
             Some(node) => {
                 self.add_to_top(node);
+                if n_pop > 0 {
+                    self.pop_layers(n_pop)?;
+                }
             }
             None => {
                 // multi-line string started
@@ -315,9 +341,9 @@ impl Parser {
     }
 
     /// Continue a multi-line string on a subsequent line.
-    /// Returns Ok(Some(node)) if the string closed on this line,
+    /// Returns Ok(Some((node, pop_count))) if the string closed on this line,
     /// Ok(None) if it continues, Err on invalid input.
-    fn handle_string_line(&mut self, line: &str) -> Result<Option<Rc<RefCell<PlnNode>>>, String> {
+    fn handle_string_line(&mut self, line: &str) -> Result<Option<(Rc<RefCell<PlnNode>>, usize)>, String> {
         let mut chars = line.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '"' {
@@ -326,17 +352,18 @@ impl Parser {
                     self.strbuf.push('"');
                     chars.next(); // consume second '"'
                 } else {
-                    // Closing quote — check for trailing content
+                    // Closing quote — check for trailing content (pop suffix)
                     let trailing: String = chars.collect();
-                    if !trailing.trim().is_empty() {
-                        return Err(format!(
-                            "extra content after closing quote: '{}'",
-                            trailing
-                        ));
+                    if trailing.is_empty() {
+                        return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
+                            self.strbuf.clone(),
+                        ))), 0)));
                     }
-                    return Ok(Some(Rc::new(RefCell::new(PlnNode::String(
+                    // Check for valid pop suffix " N"
+                    let n_pop = pop_suffix_after(&trailing)?;
+                    return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
                         self.strbuf.clone(),
-                    )))));
+                    ))), n_pop)));
                 }
             } else {
                 self.strbuf.push(c);
@@ -349,7 +376,7 @@ impl Parser {
 }
 
 // ---------------------------------------------------------------------------
-// Pop-prefix detection
+// Pop-prefix detection (digits + space at line start)
 // ---------------------------------------------------------------------------
 
 /// Returns (pop_count, content_start_index).
@@ -366,6 +393,112 @@ fn parse_pop_prefix(line: &str) -> (usize, usize) {
     } else {
         (0, 0)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pop-suffix detection (trailing " N" on leaf value lines)
+// ---------------------------------------------------------------------------
+
+/// Strip trailing " N" (space + digits) from a leaf value string.
+/// Returns the pop count. The trimmed string is modified via slice.
+fn trim_pop_suffix(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len < 2 { return 0; }
+
+    // Check if last char is a digit
+    let mut i = len - 1;
+    if !bytes[i].is_ascii_digit() { return 0; }
+
+    // Scan backward while digits
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+
+    // Check preceded by space
+    if i == 0 || bytes[i - 1] != b' ' { return 0; }
+
+    // Parse pop count
+    s[i..len].parse().unwrap_or(0)
+}
+
+/// Strip trailing " N" from a leaf value string.
+/// Returns (trimmed_slice, pop_count). The slice is the content before " N".
+fn trim_pop_suffix_and_len<'a>(s: &'a str) -> (&'a str, usize) {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len < 2 { return (s, 0); }
+
+    let mut i = len - 1;
+    if !bytes[i].is_ascii_digit() { return (s, 0); }
+
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+
+    if i == 0 || bytes[i - 1] != b' ' { return (s, 0); }
+
+    let n: usize = s[i..len].parse().unwrap_or(0);
+
+    // Also trim trailing whitespace after stripping "N" suffix
+    // to avoid the trailing space in "value N \n" from serializer
+    let content_end = i - 1;
+    // Check if there's trailing whitespace before the " N" suffix
+    // (e.g. serializer outputs "value 1 \n", we need "value")
+    let mut actual_end = content_end;
+    while actual_end > 0 && bytes[actual_end - 1] == b' ' {
+        actual_end -= 1;
+    }
+    // But don't strip spaces that are part of quoted content
+    // Only strip if the suffix pattern was clearly " N" at the end
+    if actual_end < content_end {
+        // Additional space after "N" means "value 1 " pattern from serializer
+        // The actual content is "value" and pop is 1
+        let content_str = &s[..actual_end];
+        // But we must verify we didn't strip quotes
+        if actual_end > 1 && bytes[actual_end - 1] == b'"' {
+            // Quoted content: don't strip trailing spaces inside quotes
+            // e.g. "hello " 1 -> content is "hello ", pop is 1
+            (&s[..content_end], n)
+        } else {
+            (content_str, n)
+        }
+    } else {
+        (&s[..content_end], n)
+    }
+}
+
+/// Validate that a suffix after a closing quote is a valid " N" pop marker.
+/// Returns Ok(pop_count) on success.
+fn pop_suffix_after(s: &str) -> Result<usize, String> {
+    if s.is_empty() {
+        return Ok(0);
+    }
+    let bytes = s.as_bytes();
+    if bytes[0] != b' ' {
+        return Err(format!(
+            "extra content after closing quote: '{}'",
+            s
+        ));
+    }
+    if bytes.len() < 2 || !bytes[1].is_ascii_digit() {
+        return Err(format!(
+            "extra content after closing quote: '{}'",
+            s
+        ));
+    }
+    // All remaining chars must be digits
+    let mut n: usize = 0;
+    for &b in &bytes[1..] {
+        if !b.is_ascii_digit() {
+            return Err(format!(
+                "extra content after closing quote: '{}'",
+                s
+            ));
+        }
+        n = n * 10 + ((b - b'0') as usize);
+    }
+    Ok(n)
 }
 
 // ---------------------------------------------------------------------------

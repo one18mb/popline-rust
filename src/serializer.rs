@@ -125,24 +125,18 @@ impl Generator {
     }
 
     fn put_scalar(&mut self, s: &str) {
+        self.buf.push_str(s);
+        self.flush_pop();
+        self.buf.push('\n');
         if self.top() == b'o' {
             self.awaiting_value = false;
-            self.buf.push_str(s);
-            self.buf.push('\n');
             self.need_key = true;
-        } else {
-            self.flush_pop();
-            self.buf.push_str(s);
-            self.buf.push('\n');
         }
     }
 
     fn put_string(&mut self, s: &str) {
         if self.top() == b'o' {
             self.awaiting_value = false;
-            self.need_key = true;
-        } else {
-            self.flush_pop();
         }
         self.buf.push('"');
         for c in s.chars() {
@@ -150,7 +144,11 @@ impl Generator {
             if c == '"' { self.buf.push('"'); }
         }
         self.buf.push('"');
+        self.flush_pop();
         self.buf.push('\n');
+        if self.top() == b'o' {
+            self.need_key = true;
+        }
     }
 
     fn flush_pop(&mut self) {
