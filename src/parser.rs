@@ -93,61 +93,35 @@ impl Parser {
                 if b0 == b'[' || (!is_root && !is_obj && b0 == b'{') {
                     let trimmed = line[1..].trim_start();
                     if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                        self.parse_inline_containers(line)?; continue;
+                        { let mut x = line.trim(); while !x.is_empty() { self.open(x.as_bytes()[0] == b'{'); x = x[1..].trim_start(); } continue; }
                     }
                 }
             }
 
-            match line {
-                "{" => { self.open(true); if is_root { continue; } }
-                "[" => { self.open(false); if is_root { continue; } }
-                _ => {
-                    if is_root { return self.parse_scalar_root(line); }
-                    if is_obj { self.parse_object_line(line)?; }
-                    else { self.parse_array_line(line)?; }
+            if line == "{" { self.open(true); if is_root { continue; } continue; }
+            if line == "[" { self.open(false); if is_root { continue; } continue; }
+
+            if is_root { let (v, _) = self.parse_one(line)?; return Ok(v); }
+
+            if is_obj {
+                let lb = line.as_bytes(); let mut ke = None;
+                for i in 0..lb.len().saturating_sub(1) {
+                    let b = lb[i];
+                    if b == b':' && lb[i + 1] == b' ' { ke = Some(i); break; }
+                    if b == b':' || b == b'"' || b == b'{' || b == b'[' || b == b'#' || b == b' ' || b == b'\t' { return Err("invalid key".into()); }
                 }
+                let se = ke.ok_or_else(|| format!("missing 'key: value': '{}'", line))?;
+                self.key = line[..se].to_string();
+                let vp = &line[se + 2..];
+                if vp == "{" { self.open(true); } else if vp == "[" { self.open(false); } else { let (v, np) = self.parse_one(vp)?; self.push_child(v); self.pop_layers(np); }
+            } else {
+                if line == "{" { self.open(true); } else if line == "[" { self.open(false); } else { let (v, np) = self.parse_one(line)?; self.push_child(v); self.pop_layers(np); }
             }
         }
 
         if self.in_string { return Err("unclosed string at end of input".into()); }
-        while self.stack.len() > 1 {
-            if let Some((v, k)) = self.close() { self.key = k.unwrap_or_default(); self.push_child(v); }
-        }
+        while self.stack.len() > 1 { if let Some((v, k)) = self.close() { self.key = k.unwrap_or_default(); self.push_child(v); } }
         self.close().map(|(v, _)| v).ok_or("empty input".into())
-    }
-
-    fn parse_inline_containers(&mut self, s: &str) -> Result<(), String> {
-        let mut pos = s.trim();
-        while !pos.is_empty() { self.open(pos.as_bytes()[0] == b'{'); pos = pos[1..].trim_start(); }
-        Ok(())
-    }
-
-    fn parse_object_line(&mut self, rest: &str) -> Result<(), String> {
-        let bytes = rest.as_bytes();
-        let mut key_end = None;
-        for i in 0..bytes.len().saturating_sub(1) {
-            let b = bytes[i];
-            if b == b':' && bytes[i + 1] == b' ' { key_end = Some(i); break; }
-            if b == b':' || b == b'"' || b == b'{' || b == b'[' || b == b'#' || b == b' ' || b == b'\t' {
-                return Err("invalid key".into());
-            }
-        }
-        let sep = key_end.ok_or_else(|| format!("missing 'key: value': '{}'", rest))?;
-        self.key = rest[..sep].to_string();
-        let val_part = &rest[sep + 2..];
-        match val_part { "{" => { self.open(true); return Ok(()); } "[" => { self.open(false); return Ok(()); } _ => {} }
-        let (pv, pop) = self.parse_one(val_part)?;
-        self.push_child(pv);
-        self.pop_layers(pop);
-        Ok(())
-    }
-
-    fn parse_array_line(&mut self, rest: &str) -> Result<(), String> {
-        match rest { "{" => { self.open(true); return Ok(()); } "[" => { self.open(false); return Ok(()); } _ => {} }
-        let (pv, pop) = self.parse_one(rest)?;
-        self.push_child(pv);
-        self.pop_layers(pop);
-        Ok(())
     }
 
     // -------------------------------------------------------------------
@@ -224,12 +198,6 @@ impl Parser {
     }
 
 
-    fn parse_scalar_root(&mut self, s: &str) -> Result<PlnValue, String> {
-        let (v, pop) = self.parse_one(s)?;
-        if pop > 0 { return Err("pop suffix at root".into()); }
-        if self.in_string { return Err("multi-line at root".into()); }
-        Ok(v)
-    }
 }
 
 fn pop_suffix_after(s: &str) -> Result<usize, String> {
