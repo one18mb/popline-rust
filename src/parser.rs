@@ -80,9 +80,7 @@ impl Parser {
                         self.in_string = false;
                         self.strbuf.clear();
                         self.add_to_top(node);
-                        if n_pop > 0 {
-                            self.pop_layers(n_pop)?;
-                        }
+                        self.pop_layers(n_pop)?;
                     }
                     Ok(None) => {
                         // string continues
@@ -254,10 +252,6 @@ impl Parser {
             return Err(format!("invalid key: '{}'", key));
         }
         let val_part = &rest[sep + 2..];
-        if val_part.is_empty() {
-            return Err("empty value in object".to_string());
-        }
-
         self.key = key.to_string();
 
         // Check value inline containers: `key: [ [` or `key: [ {`
@@ -299,9 +293,7 @@ impl Parser {
         match parse_scalar(val, self)? {
             Some(node) => {
                 self.add_to_top(node);
-                if n_pop > 0 {
-                    self.pop_layers(n_pop)?;
-                }
+                self.pop_layers(n_pop)?;
             }
             None => {
                 // multi-line string started; key is already in self.key
@@ -322,9 +314,7 @@ impl Parser {
         match parse_scalar(trimmed_rest, self)? {
             Some(node) => {
                 self.add_to_top(node);
-                if n_pop > 0 {
-                    self.pop_layers(n_pop)?;
-                }
+                self.pop_layers(n_pop)?;
             }
             None => {
                 // multi-line string started
