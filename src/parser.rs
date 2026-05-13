@@ -93,10 +93,13 @@ impl Parser {
             }
 
             if line.is_empty() {
+                if !self.frames.is_empty() {
+                    return Err("empty line not allowed in message body".to_string());
+                }
                 continue;
             }
 
-            // If no frames yet, this line must open the root container
+            // If no frames yet, this line is the root
             if self.frames.is_empty() {
                 // Check top-level inline containers: `[ [` or `[ {`
                 if line.len() > 1 && line.as_bytes()[0] == b'[' {
@@ -109,15 +112,20 @@ impl Parser {
                 match line {
                     "{" => {
                         self.frames.push(PlnNode::new_object());
-                        Ok(())
+                        continue;
                     }
                     "[" => {
                         self.frames.push(PlnNode::new_array());
-                        Ok(())
+                        continue;
                     }
-                    _ => Err("top level must be object or array".to_string()),
-                }?;
-                continue;
+                    _ => {
+                        // Scalar root
+                        match parse_scalar(line, self)? {
+                            Some(node) => return Ok(node.borrow().to_value()),
+                            None => return Err("multi-line string at root not supported".to_string()),
+                        }
+                    }
+                }
             }
 
             // Determine current container type
@@ -359,10 +367,6 @@ impl Parser {
         Ok(None)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Pop-prefix detection (digits + space at line start)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Pop-suffix detection (trailing " N" on leaf value lines)

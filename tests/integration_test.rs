@@ -31,6 +31,18 @@ fn test_basic_types() {
 }
 
 #[test]
+fn test_scalar_root() {
+    assert_eq!(from_str("42").unwrap(), PlnValue::Int(42));
+    assert_eq!(from_str("-42").unwrap(), PlnValue::Int(-42));
+    let v = from_str("3.14").unwrap();
+    assert!(matches!(v, PlnValue::Float(_)));
+    assert_eq!(from_str("\"hello\"").unwrap(), PlnValue::String("hello".to_string()));
+    assert_eq!(from_str("true").unwrap(), PlnValue::Bool(true));
+    assert_eq!(from_str("false").unwrap(), PlnValue::Bool(false));
+    assert_eq!(from_str("null").unwrap(), PlnValue::Null);
+}
+
+#[test]
 fn test_nesting() {
     let v = from_str("{\nouter: {\ninner: \"value\"\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
@@ -38,21 +50,18 @@ fn test_nesting() {
 
 #[test]
 fn test_pop() {
-    // Suffix-style pops
     let v = from_str("{\nouter: {\ninner: \"x\" 1\nmid: \"y\"\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
     let v = from_str("{\na: {\nb: {\nc: \"deep\" 2\nx: \"top\"\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    // Batch pops
     let v = from_str("{\nouter: {\ninner: \"x\"\nmid: \"other\" 1\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
     let v = from_str("{\na: {\nb: {\nc: \"deep\"\nx: \"top\" 2\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 
-    // Array element with suffix pop (pops the array, next line at parent level)
     let v = from_str("{\na: [\n1\n2 1\nb: true\n").unwrap();
     assert_eq!(v, from_str(&to_string(&v)).unwrap());
 }
@@ -65,11 +74,14 @@ fn test_strings() {
 
 #[test]
 fn test_errors() {
-    assert!(from_str("42\n").is_err());
-    assert!(from_str("\"str\"\n").is_err());
-    assert!(from_str("true\n").is_err());
     assert!(from_str("{\nbad:key: 1\n").is_err());
     assert!(from_str("{\n\"key\": 1\n").is_err());
+}
+
+#[test]
+fn test_empty_lines() {
+    // Empty line inside container should fail
+    assert!(from_str("{\n\nkey: 1\n").is_err());
 }
 
 // ═══════════════ Real Data Consistency ═══════════════
