@@ -1,67 +1,78 @@
 use crate::PlnValue;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::mem;
 
-/// Internal mutable DOM node for tree building (mirrors C pointer approach).
+/// Internal node: flat storage, no Rc/RefCell overhead.
 #[derive(Debug, Clone)]
-enum PlnNode {
+enum PlnRaw {
     Null,
     Bool(bool),
     Int(i64),
     Float(f64),
     String(String),
-    Object(Vec<(String, Rc<RefCell<PlnNode>>)>),
-    Array(Vec<Rc<RefCell<PlnNode>>>),
+    Obj(/* key, child_index */ Vec<(String, usize)>),
+    Arr(Vec<usize>),
 }
 
-impl PlnNode {
-    fn new_object() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(PlnNode::Object(Vec::new())))
-    }
-    fn new_array() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(PlnNode::Array(Vec::new())))
-    }
-    fn new_string(s: &str) -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(PlnNode::String(s.to_string())))
-    }
-
-    fn to_value(&self) -> PlnValue {
-        match self {
-            PlnNode::Null => PlnValue::Null,
-            PlnNode::Bool(b) => PlnValue::Bool(*b),
-            PlnNode::Int(n) => PlnValue::Int(*n),
-            PlnNode::Float(f) => PlnValue::Float(*f),
-            PlnNode::String(s) => PlnValue::String(s.clone()),
-            PlnNode::Object(obj) => {
-                PlnValue::Object(obj.iter().map(|(k, v)| (k.clone(), v.borrow().to_value())).collect())
-            }
-            PlnNode::Array(arr) => {
-                PlnValue::Array(arr.iter().map(|v| v.borrow().to_value()).collect())
-            }
-        }
-    }
-}
-
-/// PopLine parser: line-by-line, builds DOM tree.
+/// PopLine parser using arena (index-based node storage).
 struct Parser {
-    /// Stack of open containers (each an Rc into the tree).
-    frames: Vec<Rc<RefCell<PlnNode>>>,
-    /// Key for the next value being parsed (object context).
+    arena: Vec<PlnRaw>,
+    /// Stack of container indices.
+    frames: Vec<usize>,
     key: String,
-    /// Multi-line string accumulation buffer.
     strbuf: String,
-    /// True while inside a multi-line string value.
     in_string: bool,
 }
 
 pub fn from_str(text: &str) -> Result<PlnValue, String> {
     let mut p = Parser::new();
-    p.from_str(text)
+    p.parse(text)
+}
+
+/* ─── Arena helpers ─────────────────────────────────────── */
+
+fn alloc_obj(arena: &mut Vec<PlnRaw>) -> usize {
+    let idx = arena.len();
+    arena.push(PlnRaw::Obj(Vec::new()));
+    idx
+}
+
+fn alloc_arr(arena: &mut Vec<PlnRaw>) -> usize {
+    let idx = arena.len();
+    arena.push(PlnRaw::Arr(Vec::new()));
+    idx
+}
+
+/* ─── Convert arena to PlnValue (consumes arena) ────────── */
+
+fn arena_to_value(arena: &mut Vec<PlnRaw>, idx: usize) -> PlnValue {
+    let node = &mut arena[idx];
+    match mem::replace(node, PlnRaw::Null) {
+        PlnRaw::Null => PlnValue::Null,
+        PlnRaw::Bool(b) => PlnValue::Bool(b),
+        PlnRaw::Int(n) => PlnValue::Int(n),
+        PlnRaw::Float(f) => PlnValue::Float(f),
+        PlnRaw::String(s) => PlnValue::String(s),
+        PlnRaw::Obj(children) => {
+            PlnValue::Object(
+                children.into_iter()
+                    .map(|(k, ci)| (k, arena_to_value(arena, ci)))
+                    .collect()
+            )
+        }
+        PlnRaw::Arr(children) => {
+            PlnValue::Array(
+                children.into_iter()
+                    .map(|ci| arena_to_value(arena, ci))
+                    .collect()
+            )
+        }
+    }
 }
 
 impl Parser {
     fn new() -> Self {
         Parser {
+            arena: Vec::new(),
             frames: Vec::new(),
             key: String::new(),
             strbuf: String::new(),
@@ -69,23 +80,52 @@ impl Parser {
         }
     }
 
-    fn from_str(&mut self, text: &str) -> Result<PlnValue, String> {
+    fn alloc(&mut self, node: PlnRaw, _key: Option<&str>) -> usize {
+        let idx = self.arena.len();
+        self.arena.push(node);
+        idx
+    }
+
+    fn add_to_top(&mut self, child: usize) {
+        let parent = self.frames.last().copied();
+        match parent {
+            None => {
+                self.frames.push(child);
+            }
+            Some(p) => {
+                let key = mem::take(&mut self.key);
+                match &mut self.arena[p] {
+                    PlnRaw::Obj(ref mut children) => {
+                        children.push((key, child));
+                    }
+                    PlnRaw::Arr(ref mut children) => {
+                        children.push(child);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn pop_layers(&mut self, n: usize) {
+        let n = n.min(self.frames.len().saturating_sub(1));
+        for _ in 0..n { self.frames.pop(); }
+    }
+
+    fn parse(&mut self, text: &str) -> Result<PlnValue, String> {
         for line in text.lines() {
             let line = line.trim_end_matches('\r');
 
-            // Multi-line string continuation
             if self.in_string {
-                match self.handle_string_line(line) {
-                    Ok(Some((node, n_pop))) => {
+                match self.handle_string_line(line)? {
+                    Some((val_str, n_pop)) => {
                         self.in_string = false;
                         self.strbuf.clear();
-                        self.add_to_top(node);
-                        self.pop_layers(n_pop)?;
+                        let idx = self.alloc(PlnRaw::String(val_str), None);
+                        self.add_to_top(idx);
+                        self.pop_layers(n_pop);
                     }
-                    Ok(None) => {
-                        // string continues
-                    }
-                    Err(e) => return Err(e),
+                    None => {}
                 }
                 continue;
             }
@@ -97,9 +137,8 @@ impl Parser {
                 continue;
             }
 
-            // If no frames yet, this line is the root
+            // Root level
             if self.frames.is_empty() {
-                // Check top-level inline containers: `[ [` or `[ {`
                 if line.len() > 1 && line.as_bytes()[0] == b'[' {
                     let trimmed = line[1..].trim_start();
                     if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
@@ -108,32 +147,23 @@ impl Parser {
                     }
                 }
                 match line {
-                    "{" => {
-                        self.frames.push(PlnNode::new_object());
-                        continue;
-                    }
-                    "[" => {
-                        self.frames.push(PlnNode::new_array());
-                        continue;
-                    }
+                    "{" => { self.frames.push(alloc_obj(&mut self.arena)); continue; }
+                    "[" => { self.frames.push(alloc_arr(&mut self.arena)); continue; }
                     _ => {
-                        // Scalar root
                         match parse_scalar(line, self)? {
-                            Some(node) => return Ok(node.borrow().to_value()),
+                            Some(raw) => {
+                                let idx = self.alloc(raw, None);
+                                return Ok(arena_to_value(&mut self.arena, idx));
+                            }
                             None => return Err("multi-line string at root not supported".to_string()),
                         }
                     }
                 }
             }
 
-            // Determine current container type
-            let is_object = {
-                let top = self.frames.last().unwrap();
-                matches!(*top.borrow(), PlnNode::Object(_))
-            };
+            let is_obj = matches!(self.arena[*self.frames.last().unwrap()], PlnRaw::Obj(_));
 
-            // Check for inline containers in array context: `[ [` / `[ {` / `{ [` / `{ {`
-            if !is_object && line.len() > 1 {
+            if !is_obj && line.len() > 1 {
                 let bytes = line.as_bytes();
                 if bytes[0] == b'[' || bytes[0] == b'{' {
                     let trimmed = line[1..].trim_start();
@@ -146,17 +176,17 @@ impl Parser {
 
             match line {
                 "{" => {
-                    let n = PlnNode::new_object();
-                    self.add_to_top(n.clone());
-                    self.frames.push(n);
+                    let idx = alloc_obj(&mut self.arena);
+                    self.add_to_top(idx);
+                    self.frames.push(idx);
                 }
                 "[" => {
-                    let n = PlnNode::new_array();
-                    self.add_to_top(n.clone());
-                    self.frames.push(n);
+                    let idx = alloc_arr(&mut self.arena);
+                    self.add_to_top(idx);
+                    self.frames.push(idx);
                 }
                 _ => {
-                    if is_object {
+                    if is_obj {
                         self.parse_object_line(line)?;
                     } else {
                         self.parse_array_line(line)?;
@@ -165,87 +195,37 @@ impl Parser {
             }
         }
 
-        // EOF: auto-close all containers
         if self.in_string {
             return Err("unclosed string at end of input".to_string());
         }
         while self.frames.len() > 1 {
-            self.pop_one()?;
+            self.frames.pop();
         }
         self.frames
             .pop()
-            .map(|root| root.borrow().to_value())
+            .map(|root| arena_to_value(&mut self.arena, root))
             .ok_or("empty input".to_string())
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
-    /// Add `child` as a child of the current top-of-stack container.
-    /// The child's key (self.key) is used if the top is an Object.
-    fn add_to_top(&mut self, child: Rc<RefCell<PlnNode>>) {
-        if self.frames.is_empty() {
-            self.frames.push(child);
-            return;
-        }
-        let top = self.frames.last().unwrap();
-        let mut top_mut = top.borrow_mut();
-        match &mut *top_mut {
-            PlnNode::Object(ref mut obj) => {
-                obj.push((self.key.clone(), child));
-            }
-            PlnNode::Array(ref mut arr) => {
-                arr.push(child);
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Pop the top container from the tracking stack.
-    fn pop_one(&mut self) -> Result<(), String> {
-        if self.frames.len() <= 1 {
-            return Err("cannot pop root container".to_string());
-        }
-        self.frames.pop().ok_or("pop from empty stack")?;
-        Ok(())
-    }
-
-    /// Pop `n` container layers from the stack, protecting the root.
-    fn pop_layers(&mut self, n: usize) -> Result<(), String> {
-        let n = n.min(self.frames.len().saturating_sub(1)); // protect root
-        for _ in 0..n {
-            self.frames.pop().ok_or("pop from empty stack")?;
-        }
-        Ok(())
-    }
-
-    /// Parse consecutive container openers on a single line: `[ [`, `[ {`, etc.
     fn parse_inline_containers(&mut self, s: &str) -> Result<(), String> {
-        let trimmed = s.trim();
-        let mut part = trimmed;
-        while !part.is_empty() {
-            let ch = part.as_bytes()[0] as char;
-            if ch != '{' && ch != '[' {
-                return Err("inline containers must be '{' or '['".to_string());
-            }
-            let n = if ch == '{' { PlnNode::new_object() } else { PlnNode::new_array() };
+        let part = s.trim();
+        let mut pos = part;
+        while !pos.is_empty() {
+            let ch = pos.as_bytes()[0];
+            let idx = if ch == b'{' { alloc_obj(&mut self.arena) } else { alloc_arr(&mut self.arena) };
             if self.frames.is_empty() {
-                self.frames.push(n);
+                self.frames.push(idx);
             } else {
-                self.add_to_top(n.clone());
-                self.frames.push(n);
+                self.add_to_top(idx);
+                self.frames.push(idx);
             }
-            part = part[1..].trim_start();
+            pos = pos[1..].trim_start();
         }
         Ok(())
     }
 
-    /// Parse a line in object context: `key: value`.
     fn parse_object_line(&mut self, rest: &str) -> Result<(), String> {
-        // Find ": " separator
-        let sep = rest
-            .find(": ")
+        let sep = rest.find(": ")
             .ok_or_else(|| format!("object line must be 'key: value': '{}'", rest))?;
         let key = &rest[..sep];
         if !is_key_valid(key) {
@@ -254,123 +234,93 @@ impl Parser {
         let val_part = &rest[sep + 2..];
         self.key = key.to_string();
 
-        // Check value inline containers: `key: [ [` or `key: [ {`
-        if val_part.len() > 1 {
-            let bytes = val_part.as_bytes();
-            if bytes[0] == b'[' || bytes[0] == b'{' {
-                let trimmed = val_part[1..].trim_start();
-                if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                    return self.parse_inline_containers(val_part);
-                }
-            }
-        }
-
-        // Check for inline container openers
         match val_part {
             "{" => {
-                let n = PlnNode::new_object();
-                self.add_to_top(n.clone());
-                self.frames.push(n);
+                let idx = alloc_obj(&mut self.arena);
+                self.add_to_top(idx);
+                self.frames.push(idx);
                 return Ok(());
             }
             "[" => {
-                let n = PlnNode::new_array();
-                self.add_to_top(n.clone());
-                self.frames.push(n);
+                let idx = alloc_arr(&mut self.arena);
+                self.add_to_top(idx);
+                self.frames.push(idx);
                 return Ok(());
             }
             _ => {}
         }
 
-        // Leaf value: try pop suffix (only for non-container values, matching C)
         let (val, n_pop) = if val_part.as_bytes()[0] != b'{' && val_part.as_bytes()[0] != b'[' {
             fwd_trim_pop_suffix(val_part)
         } else {
             (val_part, 0)
         };
 
-        // Scalar / string value
         match parse_scalar(val, self)? {
-            Some(node) => {
-                self.add_to_top(node);
-                self.pop_layers(n_pop)?;
+            Some(raw) => {
+                let idx = self.alloc(raw, None);
+                self.add_to_top(idx);
+                self.pop_layers(n_pop);
             }
-            None => {
-                // multi-line string started; key is already in self.key
-            }
+            None => {}
         }
         Ok(())
     }
 
-    /// Parse a line in array context: the line IS the value (after pop stripping).
     fn parse_array_line(&mut self, rest: &str) -> Result<(), String> {
-        // Leaf value: try pop suffix (only for non-container values, matching C)
-        let (trimmed_rest, n_pop) = if rest.as_bytes()[0] != b'{' && rest.as_bytes()[0] != b'[' {
+        let (trimmed, n_pop) = if rest.as_bytes()[0] != b'{' && rest.as_bytes()[0] != b'[' {
             fwd_trim_pop_suffix(rest)
         } else {
             (rest, 0)
         };
 
-        match parse_scalar(trimmed_rest, self)? {
-            Some(node) => {
-                self.add_to_top(node);
-                self.pop_layers(n_pop)?;
+        match parse_scalar(trimmed, self)? {
+            Some(raw) => {
+                let idx = self.alloc(raw, None);
+                self.add_to_top(idx);
+                self.pop_layers(n_pop);
             }
-            None => {
-                // multi-line string started
-            }
+            None => {}
         }
         Ok(())
     }
 
-    /// Continue a multi-line string on a subsequent line.
-    /// Returns Ok(Some((node, pop_count))) if the string closed on this line,
-    /// Ok(None) if it continues, Err on invalid input.
-    fn handle_string_line(&mut self, line: &str) -> Result<Option<(Rc<RefCell<PlnNode>>, usize)>, String> {
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    // Escaped quote: ""
-                    self.strbuf.push('"');
-                    chars.next(); // consume second '"'
-                } else {
-                    // Closing quote -- check trailing for pop suffix " N"
-                    let trailing: String = chars.collect();
-                    if trailing.is_empty() {
-                        return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
-                            self.strbuf.clone(),
-                        ))), 0)));
-                    }
-                    // Check for valid pop suffix like " N"
-                    let n_pop = pop_suffix_after(&trailing)?;
-                    return Ok(Some((Rc::new(RefCell::new(PlnNode::String(
-                        self.strbuf.clone(),
-                    ))), n_pop)));
+    fn handle_string_line(&mut self, line: &str) -> Result<Option<(String, usize)>, String> {
+        let line_bytes = line.as_bytes();
+        let mut start = 0usize;
+        for i in 0..line.len() {
+            if line_bytes[i] == b'"' {
+                if i + 1 < line.len() && line_bytes[i + 1] == b'"' {
+                    self.strbuf.push_str(&line[start..=i]);
+                    start = i + 2;
+                    continue;
                 }
-            } else {
-                self.strbuf.push(c);
+                // Closing quote
+                self.strbuf.push_str(&line[start..i]);
+                let trailing = &line[i + 1..];
+                if trailing.is_empty() {
+                    return Ok(Some((mem::take(&mut self.strbuf), 0)));
+                }
+                let n_pop = pop_suffix_after(trailing)?;
+                return Ok(Some((mem::take(&mut self.strbuf), n_pop)));
             }
         }
-        // End of line without closing -- continue string
+        self.strbuf.push_str(&line[start..]);
         self.strbuf.push('\n');
         Ok(None)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Pop-suffix detection (trailing " N" on leaf value lines)
+// Pop suffix detection
 // ---------------------------------------------------------------------------
 
-/// Forward-scan for " N" pop suffix: when a space is found,
-/// checks if remaining chars are all digits. Returns (value, pop_count).
 fn fwd_trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
     let bytes = s.as_bytes();
     let len = bytes.len();
-    let mut in_string = false;
     for i in 0..len {
-        if bytes[i] == b'"' { in_string = !in_string; }
-        if !in_string && bytes[i] == b' ' {
+        if bytes[i] == b'"' { continue; } /* don't track in_string, just skip */
+        if bytes[i] == b' ' {
             let mut all_digits = true;
             for j in i + 1..len {
                 if !bytes[j].is_ascii_digit() { all_digits = false; break; }
@@ -384,119 +334,71 @@ fn fwd_trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
     (s, 0)
 }
 
-/// Validate that a suffix after a closing quote is a valid " N" pop marker.
-/// Returns Ok(pop_count) on success.
 fn pop_suffix_after(s: &str) -> Result<usize, String> {
-    if s.is_empty() {
-        return Ok(0);
-    }
+    if s.is_empty() { return Ok(0); }
     let bytes = s.as_bytes();
-    if bytes[0] != b' ' {
-        return Err(format!(
-            "extra line after closing quote: '{}'",
-            s
-        ));
-    }
+    if bytes[0] != b' ' { return Err(format!("extra after closing quote: '{}'", s)); }
     if bytes.len() < 2 || !bytes[1].is_ascii_digit() {
-        return Err(format!(
-            "extra line after closing quote: '{}'",
-            s
-        ));
+        return Err(format!("extra after closing quote: '{}'", s));
     }
-    // All remaining chars must be digits
     let mut n: usize = 0;
     for &b in &bytes[1..] {
-        if !b.is_ascii_digit() {
-            return Err(format!(
-                "extra line after closing quote: '{}'",
-                s
-            ));
-        }
+        if !b.is_ascii_digit() { return Err(format!("extra after closing quote: '{}'", s)); }
         n = n * 10 + ((b - b'0') as usize);
     }
     Ok(n)
 }
 
 // ---------------------------------------------------------------------------
-// Value parsing
+// Value / string parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a scalar/string value from `s`.
-/// Returns:
-///   Ok(Some(node))  -- value fully parsed
-///   Ok(None)        -- multi-line string started, not yet closed
-///   Err(msg)        -- parse error
-fn parse_scalar(
-    s: &str,
-    p: &mut Parser,
-) -> Result<Option<Rc<RefCell<PlnNode>>>, String> {
-    if s.is_empty() {
-        return Err("empty value".to_string());
-    }
-
-    // String
-    if s.starts_with('"') {
-        return parse_quoted(&s[1..], p);
-    }
-
-    // Keywords
+fn parse_scalar(s: &str, p: &mut Parser) -> Result<Option<PlnRaw>, String> {
+    if s.is_empty() { return Err("empty value".to_string()); }
+    let bytes = s.as_bytes();
+    if bytes[0] == b'"' { return parse_quoted(&s[1..], p); }
     match s {
-        "true" => return Ok(Some(Rc::new(RefCell::new(PlnNode::Bool(true))))),
-        "false" => return Ok(Some(Rc::new(RefCell::new(PlnNode::Bool(false))))),
-        "null" => return Ok(Some(Rc::new(RefCell::new(PlnNode::Null)))),
+        "true" => return Ok(Some(PlnRaw::Bool(true))),
+        "false" => return Ok(Some(PlnRaw::Bool(false))),
+        "null" => return Ok(Some(PlnRaw::Null)),
         _ => {}
     }
-
-    // Number (starts with digit or '-')
-    let first = s.as_bytes()[0] as char;
-    if first == '-' || first.is_ascii_digit() {
+    if bytes[0] == b'-' || bytes[0].is_ascii_digit() {
         if s.contains('.') || s.contains('e') || s.contains('E') {
             if let Ok(f) = s.parse::<f64>() {
-                return Ok(Some(Rc::new(RefCell::new(PlnNode::Float(f)))));
+                return Ok(Some(PlnRaw::Float(f)));
             }
         } else if let Ok(n) = s.parse::<i64>() {
-            return Ok(Some(Rc::new(RefCell::new(PlnNode::Int(n)))));
+            return Ok(Some(PlnRaw::Int(n)));
         }
     }
-
     Err(format!("bare string must be quoted: '{}'", s))
 }
 
-/// Parse a quoted string value (line is everything after the opening '"').
-/// Same return convention as parse_scalar.
-fn parse_quoted(
-    line: &str,
-    p: &mut Parser,
-) -> Result<Option<Rc<RefCell<PlnNode>>>, String> {
-    let mut result = String::new();
-    let mut chars = line.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '"' {
-            if chars.peek() == Some(&'"') {
-                // Escaped quote
+fn parse_quoted(content: &str, p: &mut Parser) -> Result<Option<PlnRaw>, String> {
+    let bytes = content.as_bytes();
+    let mut result = String::with_capacity(content.len());
+    let mut i = 0;
+    while i < content.len() {
+        if bytes[i] == b'"' {
+            if i + 1 < content.len() && bytes[i + 1] == b'"' {
                 result.push('"');
-                chars.next(); // consume second '"'
+                i += 2;
             } else {
-                // Closing quote
-                let trailing: String = chars.collect();
+                let trailing = &content[i + 1..];
                 if !trailing.trim().is_empty() {
-                    return Err(format!(
-                        "extra line after closing quote: '{}'",
-                        trailing
-                    ));
+                    return Err(format!("extra after closing quote: '{}'", trailing));
                 }
-                return Ok(Some(Rc::new(RefCell::new(PlnNode::String(result)))));
+                return Ok(Some(PlnRaw::String(result)));
             }
         } else {
-            result.push(c);
+            result.push(content[i..].chars().next().unwrap());
+            i += 1;
         }
     }
-
-    // End of line without closing -- multi-line string
     p.in_string = true;
     p.strbuf.clear();
-    p.strbuf.push_str(line);
+    p.strbuf.push_str(content);
     p.strbuf.push('\n');
     Ok(None)
 }
@@ -506,14 +408,10 @@ fn parse_quoted(
 // ---------------------------------------------------------------------------
 
 fn is_key_valid(key: &str) -> bool {
-    if key.is_empty() {
-        return false;
-    }
-    for c in key.chars() {
-        match c {
-            ':' | '"' | '{' | '[' | '#' | ' ' | '\t' | '\n' | '\r' => {
-                return false;
-            }
+    if key.is_empty() { return false; }
+    for &b in key.as_bytes() {
+        match b {
+            b':' | b'"' | b'{' | b'[' | b'#' | b' ' | b'\t' | b'\n' | b'\r' => return false,
             _ => {}
         }
     }

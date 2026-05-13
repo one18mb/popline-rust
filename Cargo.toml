@@ -1,9 +1,13 @@
 [package]
-name = "popline-rust"
-version = "0.1.0"
+name = "pln"
+version = "0.4.0"
 edition = "2021"
-description = "PopLine serialization format for Rust"
+description = "PopLine — Line-oriented serialization format (Rust implementation)"
 license = "MIT"
+authors = ["one18mb"]
+repository = "https://github.com/one18mb/popline-rust"
+keywords = ["serialization", "popline", "json"]
+categories = ["encoding", "parser-implementations"]
 
 [lib]
 name = "pln"
