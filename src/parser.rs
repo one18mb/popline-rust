@@ -113,7 +113,17 @@ impl Parser {
     }
 
     fn parse(&mut self, text: &str) -> Result<PlnValue, String> {
-        for line in text.lines() {
+        let bytes = text.as_bytes();
+        let text_len = text.len();
+        let mut line_start = 0;
+        while line_start < text_len {
+            // Find next \n
+            let mut nl = line_start;
+            while nl < text_len && bytes[nl] != b'\n' { nl += 1; }
+            let line = &text[line_start..nl];
+            line_start = nl + 1;
+
+            // Strip \r
             let line = line.trim_end_matches('\r');
 
             if self.in_string {
