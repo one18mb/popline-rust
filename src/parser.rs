@@ -82,34 +82,50 @@ impl Parser {
     fn parse(&mut self, text: &str) -> Result<PlnValue, String> {
         let bytes = text.as_bytes();
         let text_len = text.len();
-        let mut line_start = 0;
+        let mut pos = 0;
 
-        while line_start < text_len {
-            // memchr-accelerated \n search
-            let nl = match memchr(b'\n', &bytes[line_start..]) {
-                Some(offset) => line_start + offset,
-                None => text_len,
-            };
-            let ls = line_start; // save original position before advance
-            line_start = nl + 1;
-
-            // Strip \r (check byte before \n)
-            let line = if nl > ls && bytes[nl - 1] == b'\r' {
-                &text[ls..nl - 1]
-            } else {
-                &text[ls..nl]
-            };
-
-            // Multi-line string continuation
+        while pos < text_len {
+            // String has priority over \n: when in_string, scan for '"' directly
             if self.in_string {
-                if let Some((ss, n_pop)) = self.handle_string_line(line)? {
-                    self.in_string = false;
-                    self.strbuf.clear();
-                    self.push_child(PlnValue::String(ss));
-                    self.pop_layers(n_pop);
+                // Scan for closing '"', accumulating everything (including \n)
+                let start = pos;
+                while pos < text_len && bytes[pos] != b'"' { pos += 1; }
+                self.strbuf.push_str(&text[start..pos]);
+                if pos >= text_len { break; } // unterminated, caught below
+                // pos is at '"'
+                if pos + 1 < text_len && bytes[pos + 1] == b'"' {
+                    self.strbuf.push('"'); pos += 2; continue; // "" escape
                 }
+                // Closing quote — check trailing for pop suffix
+                self.in_string = false;
+                let trailing = &text[pos + 1..];
+                pos += 1;
+                // Find the end of this line (for trailing pop suffix)
+                let nl = trailing.len().min(
+                    memchr(b'\n', trailing.as_bytes()).unwrap_or(trailing.len())
+                );
+                let trail = &trailing[..nl];
+                let n_pop = if trail.trim().is_empty() {
+                    0
+                } else {
+                    pop_suffix_after(trail)?
+                };
+                let ss = mem::take(&mut self.strbuf);
+                self.push_child(PlnValue::String(ss));
+                self.pop_layers(n_pop);
+                // pos already advanced past '"'. Skip trailing content + \n
+                if nl < trailing.len() { pos += nl + 1; } // skip \n too
                 continue;
             }
+
+            // Outside string: find next \n for line boundary
+            let nl = match memchr(b'\n', &bytes[pos..]) {
+                Some(offset) => pos + offset,
+                None => text_len,
+            };
+            let line = &text[pos..nl];
+            let line = if nl > pos && bytes[nl - 1] == b'\r' { &text[pos..nl - 1] } else { line };
+            pos = nl + 1;
 
             if line.is_empty() {
                 if !self.stack.is_empty() {
@@ -314,29 +330,6 @@ impl Parser {
             .map_err(|_| "multi-line strings not supported at root".into())
     }
 
-    fn handle_string_line(&mut self, line: &str) -> Result<Option<(String, usize)>, String> {
-        let bytes = line.as_bytes();
-        let mut start = 0usize;
-        for i in 0..line.len() {
-            if bytes[i] == b'"' {
-                if i + 1 < line.len() && bytes[i + 1] == b'"' {
-                    self.strbuf.push_str(&line[start..=i]);
-                    start = i + 2;
-                    continue;
-                }
-                self.strbuf.push_str(&line[start..i]);
-                let trailing = &line[i + 1..];
-                if trailing.is_empty() {
-                    return Ok(Some((mem::take(&mut self.strbuf), 0)));
-                }
-                let n_pop = pop_suffix_after(trailing)?;
-                return Ok(Some((mem::take(&mut self.strbuf), n_pop)));
-            }
-        }
-        self.strbuf.push_str(&line[start..]);
-        self.strbuf.push('\n');
-        Ok(None)
-    }
 }
 
 // ---------------------------------------------------------------------------
