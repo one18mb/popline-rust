@@ -134,29 +134,14 @@ impl Parser {
                 continue;
             }
 
-            // Root level
-            if self.stack.is_empty() {
-                // Inline containers: `[ [` or `[ {`
-                if line.len() > 1 && line.as_bytes()[0] == b'[' {
-                    let trimmed = line[1..].trim_start();
-                    if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                        self.parse_inline_containers(line)?;
-                        continue;
-                    }
-                }
-                match line {
-                    "{" => { self.open(true); continue; }
-                    "[" => { self.open(false); continue; }
-                    _ => { return self.parse_scalar_root(line); }
-                }
-            }
+            // Unified value dispatch: inline → {/[ → scalar/value
+            let is_root = self.stack.is_empty();
+            let is_obj = !is_root && matches!(self.stack.last().unwrap().state, BuildState::Obj(_));
 
-            let is_obj = matches!(self.stack.last().unwrap().state, BuildState::Obj(_));
-
-            // Inline containers in array context: `[ [` / `[ {` / `{ [` / `{ {`
-            if !is_obj && line.len() > 1 {
+            // Inline containers: `{ {`, `{ [`, `[ [`, `[ {`
+            if line.len() > 1 {
                 let b = line.as_bytes();
-                if b[0] == b'[' || b[0] == b'{' {
+                if (b[0] == b'[') || (!is_root && !is_obj && b[0] == b'{') {
                     let trimmed = line[1..].trim_start();
                     if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
                         self.parse_inline_containers(line)?;
@@ -166,14 +151,12 @@ impl Parser {
             }
 
             match line {
-                "{" => { self.open(true); }
-                "[" => { self.open(false); }
+                "{" => { self.open(true); if is_root { continue; } }
+                "[" => { self.open(false); if is_root { continue; } }
                 _ => {
-                    if is_obj {
-                        self.parse_object_line(line)?;
-                    } else {
-                        self.parse_array_line(line)?;
-                    }
+                    if is_root { return self.parse_scalar_root(line); }
+                    if is_obj { self.parse_object_line(line)?; }
+                    else { self.parse_array_line(line)?; }
                 }
             }
         }
