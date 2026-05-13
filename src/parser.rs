@@ -266,57 +266,45 @@ impl Parser {
         Err(format!("bare string must be quoted: '{}'", s))
     }
 
-    /// Returns Ok(Some(v)) for a complete string, Ok(None) for multi-line start.
-    fn parse_quoted(&mut self, content: &str) -> Result<Option<PlnValue>, String> {
-        let bytes = content.as_bytes();
-        let mut res = String::with_capacity(content.len());
-        let mut i = 0;
-        while i < content.len() {
-            if bytes[i] == b'"' {
-                if i + 1 < content.len() && bytes[i + 1] == b'"' {
-                    res.push('"'); i += 2;
+    /// Parse a quoted string. Returns Ok(v) if complete, Err("multi-line") if continues.
+    fn parse_quoted_to(&self, content: &str, out: &mut String) -> Result<(), String> {
+        out.clear();
+        let mut chars = content.chars();
+        while let Some(c) = chars.next() {
+            if c == '"' {
+                if chars.as_str().starts_with('"') {
+                    out.push('"'); chars.next();
                 } else {
-                    let trailing = &content[i + 1..];
+                    let trailing = chars.as_str();
                     if !trailing.trim().is_empty() {
                         return Err(format!("extra after closing quote: '{}'", trailing));
                     }
-                    return Ok(Some(PlnValue::String(res)));
+                    return Ok(());
                 }
             } else {
-                res.push(content[i..].chars().next().unwrap());
-                i += 1;
+                out.push(c);
             }
         }
-        // Multi-line string
-        self.in_string = true;
-        self.strbuf.clear();
-        self.strbuf.push_str(content);
-        self.strbuf.push('\n');
-        Ok(None)
+        Err("multi-line".into())
     }
 
-    /// Closed string at root level (no multi-line support).
-    fn parse_quoted_string(&self, content: &str) -> Result<PlnValue, String> {
-        let bytes = content.as_bytes();
+    fn parse_quoted(&mut self, content: &str) -> Result<Option<PlnValue>, String> {
         let mut res = String::with_capacity(content.len());
-        let mut i = 0;
-        while i < content.len() {
-            if bytes[i] == b'"' {
-                if i + 1 < content.len() && bytes[i + 1] == b'"' {
-                    res.push('"'); i += 2;
-                } else {
-                    let trailing = &content[i + 1..];
-                    if !trailing.trim().is_empty() {
-                        return Err(format!("extra after closing quote: '{}'", trailing));
-                    }
-                    return Ok(PlnValue::String(res));
-                }
-            } else {
-                res.push(content[i..].chars().next().unwrap());
-                i += 1;
+        match self.parse_quoted_to(content, &mut res) {
+            Ok(()) => Ok(Some(PlnValue::String(res))),
+            Err(_) => {
+                self.in_string = true;
+                self.strbuf = res;
+                self.strbuf.push('\n');
+                Ok(None)
             }
         }
-        Err("multi-line strings not supported at root".into())
+    }
+
+    fn parse_quoted_string(&self, content: &str) -> Result<PlnValue, String> {
+        let mut res = String::with_capacity(content.len());
+        self.parse_quoted_to(content, &mut res).map(|_| PlnValue::String(res))
+            .map_err(|_| "multi-line strings not supported at root".into())
     }
 
     fn handle_string_line(&mut self, line: &str) -> Result<Option<(String, usize)>, String> {
@@ -388,13 +376,15 @@ fn fwd_trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
     let len = bytes.len();
     for i in 0..len {
         if bytes[i] == b'"' { continue; }
-        if bytes[i] == b' ' {
+        if bytes[i] == b' ' && i + 1 < len && bytes[i + 1].is_ascii_digit() {
+            // Validate remaining chars are all digits
             let mut all_digits = true;
             for j in i + 1..len {
                 if !bytes[j].is_ascii_digit() { all_digits = false; break; }
             }
-            if all_digits && i + 1 < len {
-                let n: usize = s[i + 1..len].parse().unwrap_or(0);
+            if all_digits {
+                let mut n: usize = (bytes[i + 1] - b'0') as usize;
+                for j in i + 2..len { n = n * 10 + (bytes[j] - b'0') as usize; }
                 return (&s[..i], n);
             }
         }
@@ -405,13 +395,10 @@ fn fwd_trim_pop_suffix<'a>(s: &'a str) -> (&'a str, usize) {
 fn pop_suffix_after(s: &str) -> Result<usize, String> {
     if s.is_empty() { return Ok(0); }
     let bytes = s.as_bytes();
-    if bytes[0] != b' ' { return Err(format!("extra after closing quote: '{}'", s)); }
-    if bytes.len() < 2 || !bytes[1].is_ascii_digit() {
-        return Err(format!("extra after closing quote: '{}'", s));
-    }
+    if bytes[0] != b' ' { return Err(format!("trailing after quote: '{}'", s)); }
     let mut n: usize = 0;
     for &b in &bytes[1..] {
-        if !b.is_ascii_digit() { return Err(format!("extra after closing quote: '{}'", s)); }
+        if !b.is_ascii_digit() { return Err(format!("trailing after quote: '{}'", s)); }
         n = n * 10 + ((b - b'0') as usize);
     }
     Ok(n)
