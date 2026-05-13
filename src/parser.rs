@@ -188,14 +188,21 @@ impl Parser {
     }
 
     fn parse_object_line(&mut self, rest: &str) -> Result<(), String> {
-        let sep = rest.find(": ")
-            .ok_or_else(|| format!("object line must be 'key: value': '{}'", rest))?;
-        let key = &rest[..sep];
-        if !is_key_valid(key) {
-            return Err(format!("invalid key: '{}'", key));
+        // Single-pass key validation + ": " search (like C parser)
+        let bytes = rest.as_bytes();
+        let len = bytes.len();
+        let mut key_end = None;
+        for i in 0..len.saturating_sub(1) {
+            let b = bytes[i];
+            if b == b':' && bytes[i + 1] == b' ' { key_end = Some(i); break; }
+            if b == b':' { return Err("invalid key (colon)".into()); }
+            if b == b'"' || b == b'{' || b == b'[' || b == b'#' ||
+               b == b' ' || b == b'\t' { return Err("invalid key".into()); }
+            // \n and \r can't appear in a single line
         }
+        let sep = key_end.ok_or_else(|| format!("missing 'key: value': '{}'", rest))?;
+        self.key = rest[..sep].to_string();
         let val_part = &rest[sep + 2..];
-        self.key = key.to_string();
 
         match val_part {
             "{" => { self.open(true); return Ok(()); }
@@ -404,17 +411,3 @@ fn pop_suffix_after(s: &str) -> Result<usize, String> {
     Ok(n)
 }
 
-// ---------------------------------------------------------------------------
-// Key validation
-// ---------------------------------------------------------------------------
-
-fn is_key_valid(key: &str) -> bool {
-    if key.is_empty() { return false; }
-    for &b in key.as_bytes() {
-        match b {
-            b':' | b'"' | b'{' | b'[' | b'#' | b' ' | b'\t' | b'\n' | b'\r' => return false,
-            _ => {}
-        }
-    }
-    true
-}
