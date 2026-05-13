@@ -85,37 +85,42 @@ impl Parser {
                 continue;
             }
 
-            let is_root = self.stack.is_empty();
-            let is_obj = !is_root && matches!(self.stack.last().unwrap().state, BuildState::Obj(_));
-
-            if line.len() > 1 {
-                let b0 = line.as_bytes()[0];
-                if b0 == b'[' || (!is_root && !is_obj && b0 == b'{') {
-                    let trimmed = line[1..].trim_start();
-                    if trimmed.len() > 0 && (trimmed.as_bytes()[0] == b'[' || trimmed.as_bytes()[0] == b'{') {
-                        { let mut x = line.trim(); while !x.is_empty() { self.open(x.as_bytes()[0] == b'{'); x = x[1..].trim_start(); } continue; }
+            if self.stack.is_empty() {
+                if line.len() > 1 && line.as_bytes()[0] == b'[' {
+                    let t = line[1..].trim_start();
+                    if t.len() > 0 && (t.as_bytes()[0] == b'[' || t.as_bytes()[0] == b'{') {
+                        let mut x = line.trim(); while !x.is_empty() { self.open(x.as_bytes()[0] == b'{'); x = x[1..].trim_start(); } continue;
                     }
                 }
+                if line == "{" { self.open(true); continue; }
+                if line == "[" { self.open(false); continue; }
+                let (v, _) = self.parse_one(line)?; return Ok(v);
             }
 
-            if line == "{" { self.open(true); if is_root { continue; } continue; }
-            if line == "[" { self.open(false); if is_root { continue; } continue; }
-
-            if is_root { let (v, _) = self.parse_one(line)?; return Ok(v); }
+            let is_obj = matches!(self.stack.last().unwrap().state, BuildState::Obj(_));
 
             if is_obj {
-                let lb = line.as_bytes(); let mut ke = None;
+                let lb = line.as_bytes(); let mut sep = None;
                 for i in 0..lb.len().saturating_sub(1) {
                     let b = lb[i];
-                    if b == b':' && lb[i + 1] == b' ' { ke = Some(i); break; }
+                    if b == b':' && lb[i + 1] == b' ' { sep = Some(i); break; }
                     if b == b':' || b == b'"' || b == b'{' || b == b'[' || b == b'#' || b == b' ' || b == b'\t' { return Err("invalid key".into()); }
                 }
-                let se = ke.ok_or_else(|| format!("missing 'key: value': '{}'", line))?;
+                let se = sep.ok_or_else(|| format!("missing 'key: value': '{}'", line))?;
                 self.key = line[..se].to_string();
                 let vp = &line[se + 2..];
-                if vp == "{" { self.open(true); } else if vp == "[" { self.open(false); } else { let (v, np) = self.parse_one(vp)?; self.push_child(v); self.pop_layers(np); }
+                if vp == "{" { self.open(true); } else if vp == "[" { self.open(false); } else { let (r, np) = self.parse_one(vp)?; self.push_child(r); self.pop_layers(np); }
             } else {
-                if line == "{" { self.open(true); } else if line == "[" { self.open(false); } else { let (v, np) = self.parse_one(line)?; self.push_child(v); self.pop_layers(np); }
+                if line.len() > 1 {
+                    let b0 = line.as_bytes()[0];
+                    if b0 == b'[' || b0 == b'{' {
+                        let t = line[1..].trim_start();
+                        if t.len() > 0 && (t.as_bytes()[0] == b'[' || t.as_bytes()[0] == b'{') {
+                            let mut x = line.trim(); while !x.is_empty() { self.open(x.as_bytes()[0] == b'{'); x = x[1..].trim_start(); } continue;
+                        }
+                    }
+                }
+                if line == "{" { self.open(true); } else if line == "[" { self.open(false); } else { let (r, np) = self.parse_one(line)?; self.push_child(r); self.pop_layers(np); }
             }
         }
 
