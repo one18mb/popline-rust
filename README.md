@@ -6,33 +6,29 @@ PopLine 序列化格式的 Rust 实现。
 
 ```toml
 [dependencies]
-popline-rust = "0.1.0"
+pln = "0.4"
 ```
 
 ## 使用
 
 ```rust
-use popline_rust::{parse, serialize, PlnValue};
+use pln::{from_str, to_string};
 
-// 解析
-let v = parse("{\nkey: \"value\"\n").unwrap();
+// PopLine → Rust 对象
+let v = from_str("{\nkey: \"value\"\n").unwrap();
 
-// 序列化
-let s = serialize(&v);
-
-// 构建 DOM
-let mut obj = PlnValue::new_object();
-obj.add_to_object("name", PlnValue::new_string("test"));
+// Rust 对象 → PopLine
+let s = to_string(&v);
 ```
 
 ## 性能
 
-测试数据：`package.json`（17011 B）→ `package.pln`（13074 B，**76.9%**），5000 次迭代
+测试数据：`package.json`（17011 B）→ `package.pln`（13076 B，**76.9%**），5000 次迭代
 
 | 操作 | serde_json | pln | 比 |
 |------|-----------|-------------|------|
-| 解析 | 4788 ms (958 µs/op) | 9042 ms (1808 µs/op) | 1.89x |
-| 序列化 | 6783 ms (1357 µs/op) | 2323 ms (465 µs/op) | **0.34x** |
+| 解析 | 149 µs/op | 152 µs/op | **1.02x** |
+| 序列化 | 28 µs/op | 32 µs/op | **1.14x** |
 
 ## 测试
 
@@ -41,6 +37,7 @@ cargo test
 ```
 
 ## 致谢
+
 本项目的开发得到了以下 AI 工具的大力协助：
 - [Claude Code](https://claude.ai)（Anthropic）
 - [DeepSeek](https://deepseek.com)（深度求索）
