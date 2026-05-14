@@ -104,7 +104,7 @@ impl Parser {
                 for i in 0..lb.len().saturating_sub(1) {
                     let b = lb[i];
                     if b == b':' && lb[i + 1] == b' ' { sep = Some(i); break; }
-                    if b == b':' || b == b'"' || b == b'{' || b == b'[' || b == b'#' || b == b' ' || b == b'\t' { return Err("invalid key".into()); }
+                    if b == b':' || b == b'"' || b == b'{' || b == b'[' || b == b' ' || b == b'\t' { return Err("invalid key".into()); }
                 }
                 let se = sep.ok_or_else(|| format!("missing 'key: value': '{}'", line))?;
                 self.key = line[..se].to_string();
