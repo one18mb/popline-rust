@@ -27,7 +27,7 @@ obj.add_to_object("name", PlnValue::new_string("test"));
 
 ## Performance
 
-Data: `package.json` (17011 B) → `package.pln` (13074 B, **76.9%**), 5000 iterations
+Data: `test-package.json` (17011 B) → `test-package.pln` (13074 B, **76.9%**), 5000 iterations
 
 | Operation | serde_json | pln | Ratio |
 |-----------|-----------|-------------|-------|

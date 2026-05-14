@@ -88,13 +88,13 @@ fn test_empty_lines() {
 
 #[test]
 fn test_real_data_consistency() {
-    let json_text = match fs::read_to_string("package.json") {
+    let json_text = match fs::read_to_string("test-package.json") {
         Ok(t) => t,
-        Err(_) => { eprintln!("  SKIP: package.json not found"); return; }
+        Err(_) => { eprintln!("  SKIP: test-package.json not found"); return; }
     };
-    let pln_text = match fs::read_to_string("package.pln") {
+    let pln_text = match fs::read_to_string("test-package.pln") {
         Ok(t) => t,
-        Err(_) => { eprintln!("  SKIP: package.pln not found"); return; }
+        Err(_) => { eprintln!("  SKIP: test-package.pln not found"); return; }
     };
 
     let json_obj: serde_json::Value = serde_json::from_str(&json_text).unwrap();
@@ -116,13 +116,13 @@ fn test_real_data_consistency() {
 
 #[test]
 fn test_benchmark() {
-    let json_text = match fs::read_to_string("package.json") {
+    let json_text = match fs::read_to_string("test-package.json") {
         Ok(t) => t,
-        Err(_) => { eprintln!("  SKIP: package.json not found"); return; }
+        Err(_) => { eprintln!("  SKIP: test-package.json not found"); return; }
     };
-    let pln_text = match fs::read_to_string("package.pln") {
+    let pln_text = match fs::read_to_string("test-package.pln") {
         Ok(t) => t,
-        Err(_) => { eprintln!("  SKIP: package.pln not found"); return; }
+        Err(_) => { eprintln!("  SKIP: test-package.pln not found"); return; }
     };
 
     let json_obj: serde_json::Value = serde_json::from_str(&json_text).unwrap();
